@@ -1,0 +1,72 @@
+import asyncio
+
+from scrapybara import Scrapybara
+from playwright.async_api import async_playwright
+
+async def get_scrapybara_browser():
+    client = Scrapybara(api_key="scrapy-9da8b2f0-6361-485c-9b3c-f0b2025627c3")
+    instance = client.start_browser()
+    return instance
+
+async def retrieve_menu_items(instance, start_url: str) -> list[dict]:
+    cdp_url = instance.get_cdp_url().cdp_url
+    async with async_playwright() as p:
+        browser = await p.chromium.connect_over_cdp(cdp_url)
+        page = await browser.new_page()
+
+        # Collecting information about menu items
+        menu = []
+
+        async def handle_items(route, request):
+            if "https://www.doordash.com/graphql/itemPage?operation=itemPage" in route.request.url:
+                response = await route.continue_()
+                try:
+                    menu_data = await response.json()
+                    menu.append({menu_data.get("data").get("itemPage").get("itemHeader").get("name"): menu_data})
+                except Exception as error:
+                    print(f"failed with error {error}")
+
+        await page.route("**/*", handle_items)
+
+        # clicking through the menu list
+        await page.goto(start_url)
+
+        #checks for iframes
+        for frame in page.frames:
+            try:
+                await frame.wait_for_selector('[data-testid="menu-item"]', timeout=20000)
+                click_menu = await frame.locator("[data-testid='menu-item']").all()
+
+                for i, item in enumerate(click_menu):
+                    try:
+                        await item.scroll_into_view_if_needed()
+                        await item.click()
+                        await frame.wait_for_timeout(20000)
+                        close = frame.locator('[aria-label="Close"]')
+                        await close.click()
+                        await frame.wait_for_timeout(20000)
+                    except Exception as error:
+                        print(f"Cannot click into menu item in iframe {frame.name} with error {error}")
+
+            except Exception as error:
+                print(f"Error inside iframe {frame.name} with error {error}")
+
+        await page.close()
+
+        return menu
+
+async def main():
+    instance = await get_scrapybara_browser()
+
+    try:
+        await retrieve_menu_items(
+            instance,
+            "https://www.doordash.com/store/panda-express-san-francisco-980938/12722988/?event_type=autocomplete&pickup=false",
+        )
+    finally:
+        # Be sure to close the browser instance after you're done!
+        instance.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
